@@ -1,5 +1,6 @@
 /*
- * This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License.
+ * This software is in the public domain under CC0 1.0 Universal plus a 
+ * Grant of Patent License.
  * 
  * To the extent possible under law, the author(s) have dedicated all
  * copyright and related and neighboring rights to this software to the
@@ -25,7 +26,7 @@ import org.moqui.context.Cache
 import org.moqui.context.CacheFacade
 import org.moqui.context.LoggerFacade
 import org.moqui.context.ResourceFacade
-import org.moqui.context.ScreenFacade
+import org.moqui.screen.ScreenFacade
 import org.moqui.context.TransactionFacade
 import org.moqui.entity.EntityFacade
 import org.moqui.impl.StupidWebUtilities
