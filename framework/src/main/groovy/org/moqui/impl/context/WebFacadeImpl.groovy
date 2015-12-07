@@ -697,7 +697,7 @@ class WebFacadeImpl implements WebFacade {
 
     @Override
     @CompileStatic
-    void handleEntityRestCall(List<String> extraPathNameList) {
+    void handleEntityRestCall(List<String> extraPathNameList, boolean masterNameInPath) {
         ContextStack parmStack = (ContextStack) getParameters()
 
         // check for parsing error, send a 400 response
@@ -732,14 +732,14 @@ class WebFacadeImpl implements WebFacade {
                     // logger.warn("========== REST ${request.getMethod()} ${request.getPathInfo()} ${extraPathNameList}; body list object: ${bodyListObj}")
                     parmStack.push()
                     parmStack.putAll((Map) bodyListObj)
-                    Object responseObj = eci.getEntity().rest(request.getMethod(), extraPathNameList, parmStack)
+                    Object responseObj = eci.getEntity().rest(request.getMethod(), extraPathNameList, parmStack, masterNameInPath)
                     responseList.add(responseObj ?: [:])
                     parmStack.pop()
                 }
                 sendJsonResponse(responseList)
             } else {
                 long startTime = System.currentTimeMillis()
-                Object responseObj = eci.getEntity().rest(request.getMethod(), extraPathNameList, parmStack)
+                Object responseObj = eci.getEntity().rest(request.getMethod(), extraPathNameList, parmStack, masterNameInPath)
                 long endTime = System.currentTimeMillis()
                 response.addIntHeader('X-Run-Time-ms', (endTime - startTime) as int)
 
@@ -785,7 +785,8 @@ class WebFacadeImpl implements WebFacade {
 
     @Override
     @CompileStatic
-    void handleEntityRestSchema(List<String> extraPathNameList, String schemaUri, String linkPrefix, String schemaLinkPrefix) {
+    void handleEntityRestSchema(List<String> extraPathNameList, String schemaUri, String linkPrefix,
+                                String schemaLinkPrefix, boolean getMaster) {
         // make sure a user is logged in, screen/etc that calls will generally be configured to not require auth
         if (!eci.getUser().getUsername()) {
             // if there was a login error there will be a MessageFacade error message
@@ -797,7 +798,7 @@ class WebFacadeImpl implements WebFacade {
 
         EntityFacadeImpl efi = eci.getEcfi().getEntityFacade()
 
-        if (extraPathNameList.size() < 1) {
+        if (extraPathNameList.size() == 0) {
             List allRefList = []
             Map definitionsMap = [:]
             definitionsMap.put('paginationParameters', EntityDefinition.paginationParameters)
@@ -805,14 +806,32 @@ class WebFacadeImpl implements WebFacade {
                     anyOf:allRefList, definitions:definitionsMap]
             if (schemaUri) rootMap.put('id', schemaUri)
 
-            Set<String> entityNameSet = efi.getAllNonViewEntityNames()
+            Set<String> entityNameSet
+            if (getMaster) {
+                // if getMaster and no entity name in path, just get entities with master definitions
+                entityNameSet = efi.getAllEntityNamesWithMaster()
+            } else {
+                entityNameSet = efi.getAllNonViewEntityNames()
+            }
             for (String entityName in entityNameSet) {
                 EntityDefinition ed = efi.getEntityDefinition(entityName)
                 String refName = ed.getShortAlias() ?: ed.getFullEntityName()
-                allRefList.add(['$ref':"#/definitions/${refName}"])
+                if (getMaster) {
+                    Map<String, EntityDefinition.MasterDefinition> masterDefMap = ed.getMasterDefinitionMap()
+                    Map entityPathMap = [:]
+                    for (String masterName in masterDefMap.keySet()) {
+                        allRefList.add(['$ref':"#/definitions/${refName}/${masterName}"])
 
-                Map schema = ed.getJsonSchema(false, null, schemaUri, linkPrefix, schemaLinkPrefix)
-                definitionsMap.put(refName, schema)
+                        Map schema = ed.getJsonSchema(false, definitionsMap, schemaUri, linkPrefix, schemaLinkPrefix, masterName, null)
+                        entityPathMap.put(masterName, schema)
+                    }
+                    definitionsMap.put(refName, entityPathMap)
+                } else {
+                    allRefList.add(['$ref':"#/definitions/${refName}"])
+
+                    Map schema = ed.getJsonSchema(false, null, schemaUri, linkPrefix, schemaLinkPrefix, null, null)
+                    definitionsMap.put(refName, schema)
+                }
             }
 
             JsonBuilder jb = new JsonBuilder()
@@ -823,6 +842,14 @@ class WebFacadeImpl implements WebFacade {
         } else {
             String entityName = extraPathNameList.get(0)
             if (entityName.endsWith(".json")) entityName = entityName.substring(0, entityName.length() - 5)
+
+            String masterName = null
+            if (extraPathNameList.size() > 1) {
+                masterName = extraPathNameList.get(1)
+                if (masterName.endsWith(".json")) masterName = masterName.substring(0, masterName.length() - 5)
+            }
+            if (getMaster && !masterName) masterName = "default"
+
             try {
                 EntityDefinition ed = efi.getEntityDefinition(entityName)
                 if (ed == null) {
@@ -830,7 +857,7 @@ class WebFacadeImpl implements WebFacade {
                     return
                 }
 
-                Map schema = ed.getJsonSchema(true, null, schemaUri, linkPrefix, schemaLinkPrefix)
+                Map schema = ed.getJsonSchema(true, null, schemaUri, linkPrefix, schemaLinkPrefix, masterName, null)
                 // TODO: support array wrapper (different URL? suffix?) with [type:'array', items:schema]
 
                 // sendJsonResponse(schema)
@@ -847,7 +874,7 @@ class WebFacadeImpl implements WebFacade {
 
     @Override
     @CompileStatic
-    void handleEntityRestRaml(List<String> extraPathNameList, String linkPrefix, String schemaLinkPrefix) {
+    void handleEntityRestRaml(List<String> extraPathNameList, String linkPrefix, String schemaLinkPrefix, boolean getMaster) {
         // make sure a user is logged in, screen/etc that calls will generally be configured to not require auth
         if (!eci.getUser().getUsername()) {
             // if there was a login error there will be a MessageFacade error message
@@ -864,14 +891,50 @@ class WebFacadeImpl implements WebFacade {
                                        mediaType:'application/json', schemas:schemasList] as Map<String, Object>
         rootMap.put('traits', [[paged:[queryParameters:EntityDefinition.ramlPaginationParameters]]])
 
-        Set<String> entityNameSet = efi.getAllNonViewEntityNames()
+        Set<String> entityNameSet
+        String masterName = null
+        if (extraPathNameList.size() > 0) {
+            String entityName = extraPathNameList.get(0)
+            if (entityName.endsWith(".raml")) entityName = entityName.substring(0, entityName.length() - 5)
+
+            if (extraPathNameList.size() > 1) {
+                masterName = extraPathNameList.get(1)
+                if (masterName.endsWith(".raml")) masterName = masterName.substring(0, masterName.length() - 5)
+            }
+
+            entityNameSet = new TreeSet<String>()
+            entityNameSet.add(entityName)
+        } else if (getMaster) {
+            // if getMaster and no entity name in path, just get entities with master definitions
+            entityNameSet = efi.getAllEntityNamesWithMaster()
+        } else {
+            entityNameSet = efi.getAllNonViewEntityNames()
+        }
         for (String entityName in entityNameSet) {
             EntityDefinition ed = efi.getEntityDefinition(entityName)
             String refName = ed.getShortAlias() ?: ed.getFullEntityName()
-            schemasList.add([(refName):"!include ${schemaLinkPrefix}/${refName}.json".toString()])
+            if (getMaster) {
+                Set<String> masterNameSet = new LinkedHashSet<String>()
+                if (masterName) {
+                    masterNameSet.add(masterName)
+                } else {
+                    Map<String, EntityDefinition.MasterDefinition> masterDefMap = ed.getMasterDefinitionMap()
+                    masterNameSet.addAll(masterDefMap.keySet())
+                }
+                Map entityPathMap = [:]
+                for (String curMasterName in masterNameSet) {
+                    schemasList.add([("${refName}/${curMasterName}".toString()):"!include ${schemaLinkPrefix}/${refName}/${curMasterName}.json".toString()])
 
-            Map ramlApi = ed.getRamlApi()
-            rootMap.put('/' + refName, ramlApi)
+                    Map ramlApi = ed.getRamlApi(masterName)
+                    entityPathMap.put("/" + curMasterName, ramlApi)
+                }
+                rootMap.put("/" + refName, entityPathMap)
+            } else {
+                schemasList.add([(refName):"!include ${schemaLinkPrefix}/${refName}.json".toString()])
+
+                Map ramlApi = ed.getRamlApi(null)
+                rootMap.put('/' + refName, ramlApi)
+            }
         }
 
         DumperOptions options = new DumperOptions()

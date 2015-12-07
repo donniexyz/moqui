@@ -843,6 +843,15 @@ class EntityFacadeImpl implements EntityFacade {
         }
         return nonViewNames
     }
+    Set<String> getAllEntityNamesWithMaster() {
+        Set<String> allNames = getAllEntityNames()
+        Set<String> masterNames = new TreeSet<>()
+        for (String name in allNames) {
+            EntityDefinition ed = getEntityDefinition(name)
+            if (ed != null && !ed.isViewEntity() && ed.masterDefinitionMap) masterNames.add(name)
+        }
+        return masterNames
+    }
 
     List<Map> getAllEntityInfo(int levels, boolean excludeViewEntities) {
         Map<String, Map> entityInfoMap = [:]
@@ -1093,11 +1102,13 @@ class EntityFacadeImpl implements EntityFacade {
     final static Map<String, String> operationByMethod = [get:'find', post:'create', put:'store', patch:'update', delete:'delete']
     @Override
     @CompileStatic
-    Object rest(String operation, List<String> entityPath, Map parameters) {
+    Object rest(String operation, List<String> entityPath, Map parameters, boolean masterNameInPath) {
         if (!operation) throw new EntityException("Operation (method) must be specified")
         operation = operationByMethod.get(operation.toLowerCase()) ?: operation
         if (!(operation in ['find', 'create', 'store', 'update', 'delete']))
             throw new EntityException("Operation [${operation}] not supported, must be one of: get, post, put, patch, or delete for HTTP request methods or find, create, store, update, or delete for direct entity operations")
+
+        if (!entityPath) throw new EntityException("No entity name or alias specified in path")
 
         boolean dependents = (parameters.dependents == 'true' || parameters.dependents == 'Y')
         int dependentLevels = (parameters.dependentLevels ?: (dependents ? '2' : '0')) as int
@@ -1109,6 +1120,19 @@ class EntityFacadeImpl implements EntityFacade {
         EntityDefinition firstEd = getEntityDefinition(firstEntityName)
         // this exception will be thrown at lower levels, but just in case check it again here
         if (firstEd == null) throw new EntityNotFoundException("No entity found with name or alias [${firstEntityName}]")
+
+        // look for a master definition name as the next path element
+        if (masterNameInPath) {
+            if (!masterName) {
+                if (localPath.size() > 0 && firstEd.getMasterDefinition(localPath.get(0)) != null) {
+                    masterName = localPath.remove(0)
+                } else {
+                    masterName = "default"
+                }
+            }
+            if (firstEd.getMasterDefinition(masterName) == null)
+                throw new EntityException("Master definition not found for entity [${firstEd.getFullEntityName()}], tried master name [${masterName}]")
+        }
 
         // if there are more path elements use one for each PK field of the entity
         if (localPath) {

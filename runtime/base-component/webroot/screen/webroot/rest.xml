@@ -45,6 +45,16 @@ along with this software (see the LICENSE.md file). If not, see
 
     curl -X GET -u john.doe:moqui -i http://localhost:8080/rest/v1/examples/TEST2?master=default
 
+    Or for operations ONLY on entities by master definition use the "m1" path instead of "v1" and put the master name
+    (default is 'default') after the entity name or alias in the path. For example:
+
+    curl -X GET -u john.doe:moqui -i http://localhost:8080/rest/m1/examples/default/TEST2
+
+    Under the "m1" path if the path element after the entity name or alias is not the name of a master for the entity
+    it uses the "default" master definition. Because of that the following also works:
+
+    curl -X GET -u john.doe:moqui -i http://localhost:8080/rest/m1/examples/TEST2
+
     Parameters can also be used for searching, which supports the per-field extensions (_op, _ic, etc) of
     EntityFind.searchFormInputs(), the orderByField parameter for comma-separated fields to sort the results by,
     and pageIndex, pageSize for pagination; parameters can be in the URL (preferred) or in request body as JSON.
@@ -128,7 +138,11 @@ along with this software (see the LICENSE.md file). If not, see
     -->
     <!-- NOTE: read-only=true to disable check for URL parameters for transitions with actions -->
     <transition name="v1" read-only="true">
-        <actions><script>ec.web.handleEntityRestCall(sri.screenUrlInfo.extraPathNameList)</script></actions>
+        <actions><script>ec.web.handleEntityRestCall(sri.screenUrlInfo.extraPathNameList, false)</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="m1" read-only="true">
+        <actions><script>ec.web.handleEntityRestCall(sri.screenUrlInfo.extraPathNameList, true)</script></actions>
         <default-response type="none"/>
     </transition>
 
@@ -149,18 +163,49 @@ along with this software (see the LICENSE.md file). If not, see
     -->
     <transition name="schema" read-only="true" method="get">
         <actions><script>ec.web.handleEntityRestSchema(sri.screenUrlInfo.extraPathNameList, sri.buildUrl("schema").getUrl(),
-                sri.buildUrl("v1").getUrl(), sri.buildUrl("schema").getUrl())</script></actions>
+                sri.buildUrl("v1").getUrl(), sri.buildUrl("schema").getUrl(), false)</script></actions>
         <default-response type="none"/>
     </transition>
     <transition name="schema.json" read-only="true" method="get">
         <actions><script>ec.web.handleEntityRestSchema(sri.screenUrlInfo.extraPathNameList, sri.buildUrl("schema").getUrl(),
-                sri.buildUrl("v1").getUrl(), sri.buildUrl("schema").getUrl())</script></actions>
+                sri.buildUrl("v1").getUrl(), sri.buildUrl("schema").getUrl(), false)</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="schema.raml" read-only="true" method="get">
+        <actions><script>ec.web.handleEntityRestRaml(sri.screenUrlInfo.extraPathNameList,
+                sri.buildUrl("v1").getUrl(), sri.buildUrl("schema").getUrl(), false)</script></actions>
         <default-response type="none"/>
     </transition>
 
-    <transition name="schema.raml" read-only="true" method="get">
+    <!--
+    To get the json-schema (see http://json-schema.org) for a master entity use a path with the entity name then the
+    master definition name (optional, get all if not specified). Note that the .json extension is optional.
+
+    curl -X GET -u john.doe:moqui http://localhost:8080/rest/mschema.json/examples/default
+    curl -X GET -u john.doe:moqui http://localhost:8080/rest/mschema.json/examples/default.json
+    curl -X GET -u john.doe:moqui http://localhost:8080/rest/mschema.json/examples.json
+    curl -X GET -u john.doe:moqui http://localhost:8080/rest/mschema.json/example.Example
+
+    To get the json-schema (see http://json-schema.org) for ALL master entities simply leave off the entity name and
+    master name:
+
+    curl -X GET -u john.doe:moqui http://localhost:8080/rest/mschema.json
+
+    To get the RAML schema (see http://raml.org) follow the same pattern except with mschema.raml instead of mschema.json:
+
+    curl -X GET -u john.doe:moqui http://localhost:8080/rest/mschema.raml/examples/default
+    curl -X GET -u john.doe:moqui http://localhost:8080/rest/mschema.raml/examples.raml
+    curl -X GET -u john.doe:moqui http://localhost:8080/rest/mschema.raml/example.Example
+    curl -X GET -u john.doe:moqui http://localhost:8080/rest/mschema.raml
+    -->
+    <transition name="mschema.json" read-only="true" method="get">
+        <actions><script>ec.web.handleEntityRestSchema(sri.screenUrlInfo.extraPathNameList, sri.buildUrl("mschema.json").getUrl(),
+                sri.buildUrl("m1").getUrl(), sri.buildUrl("mschema.json").getUrl(), true)</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="mschema.raml" read-only="true" method="get">
         <actions><script>ec.web.handleEntityRestRaml(sri.screenUrlInfo.extraPathNameList,
-                sri.buildUrl("v1").getUrl(), sri.buildUrl("schema").getUrl())</script></actions>
+                sri.buildUrl("m1").getUrl(), sri.buildUrl("mschema.raml").getUrl(), true)</script></actions>
         <default-response type="none"/>
     </transition>
 
