@@ -13,8 +13,8 @@ along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
-    <xs:include schemaLocation="common-types-1.5.xsd"/>
-    <xs:include schemaLocation="xml-actions-1.5.xsd"/>
+    <xs:include schemaLocation="common-types-1.6.xsd"/>
+    <xs:include schemaLocation="xml-actions-1.6.xsd"/>
 
     <!-- root element -->
     <xs:element name="services">
@@ -47,6 +47,7 @@ along with this software (see the LICENSE.md file). If not, see
                     the best way to describe what is being acted on, but this can really be anything.
                 </xs:documentation></xs:annotation>
             </xs:attribute>
+            <xs:attribute name="displayName" type="xs:string" use="optional"/>
             <xs:attribute name="type" default="inline">
                 <xs:annotation><xs:documentation>
                     The service type specifies how the service is implemented. Additional types can be added by
@@ -214,10 +215,12 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:sequence>
                 <xs:element minOccurs="0" ref="description"/>
                 <xs:element minOccurs="0" maxOccurs="unbounded" ref="subtype"/>
-                <xs:element minOccurs="0" maxOccurs="unbounded" ref="parameter">
-                    <xs:annotation><xs:documentation>Nested parameters are for Map and Node (groovy.util.Node) type
-                        parameters only.</xs:documentation></xs:annotation>
-                </xs:element>
+                <xs:choice minOccurs="0" maxOccurs="unbounded">
+                    <xs:element ref="auto-parameters"/>
+                    <xs:element ref="parameter">
+                        <xs:annotation><xs:documentation>Nested parameters are for List, Map, Node, etc type parameters.</xs:documentation></xs:annotation>
+                    </xs:element>
+                </xs:choice>
                 <xs:element minOccurs="0" maxOccurs="unbounded" ref="ParameterValidations">
                     <xs:annotation><xs:documentation>To override the default message for each just add the message
                         inside the element.</xs:documentation></xs:annotation>

@@ -91,6 +91,8 @@ class WebFacadeStub implements WebFacade {
     Map<String, Object> getRequestAttributes() { return requestParameters }
     @Override
     Map<String, Object> getRequestParameters() { return requestParameters }
+    @Override
+    String getHostName() { return "localhost" }
 
     @Override
     HttpServletResponse getResponse() { return httpServletResponse }
@@ -172,12 +174,8 @@ class WebFacadeStub implements WebFacade {
     void handleEntityRestCall(List<String> extraPathNameList, boolean masterNameInPath) {
         throw new IllegalArgumentException("WebFacadeStub handleEntityRestCall not supported") }
     @Override
-    void handleEntityRestSchema(List<String> extraPathNameList, String schemaUri, String linkPrefix, String schemaLinkPrefix, boolean getMaster) {
-        throw new IllegalArgumentException("WebFacadeStub handleEntityRestSchema not supported")
-    }
-    @Override
-    void handleEntityRestRaml(List<String> extraPathNameList, String linkPrefix, String schemaLinkPrefix, boolean getMaster) {
-        throw new IllegalArgumentException("WebFacadeStub handleEntityRestRaml not supported")
+    void handleServiceRestCall(List<String> extraPathNameList) {
+        throw new IllegalArgumentException("WebFacadeStub handleServiceRestCall not supported")
     }
 
     static class HttpServletRequestStub implements HttpServletRequest {

@@ -923,21 +923,25 @@ public class EntityDefinition {
         return nonPkFieldDefaults
     }
 
-    protected static final Map<String, String> fieldTypeJsonMap = [
+    static final Map<String, String> fieldTypeJsonMap = [
             "id":"string", "id-long":"string", "text-indicator":"string", "text-short":"string", "text-medium":"string",
             "text-long":"string", "text-very-long":"string", "date-time":"string", "time":"string",
             "date":"string", "number-integer":"number", "number-float":"number",
             "number-decimal":"number", "currency-amount":"number", "currency-precise":"number",
             "binary-very-long":"string" ] // NOTE: binary-very-long may need hyper-schema stuff
-    static final Map paginationParameters =
-            [type:'object', properties:
-                    [pageIndex:[type:'number', description:'Page number to return, starting with zero'],
-                     pageSize:[type:'number', description:'Number of records per page (default 100)'],
-                     orderByField:[type:'string', description:'Field name to order by (or comma separated names)'],
-                     pageNoLimit:[type:'string', description:'If true don\'t limit page size (no pagination)'],
-                     dependentLevels:[type:'number', description:'Levels of dependent child records to include']
-                    ]
+    static final Map<String, String> fieldTypeJsonFormatMap = [
+            "date-time":"date-time", "date":"date", "number-integer":"int64", "number-float":"double",
+            "number-decimal":"", "currency-amount":"", "currency-precise":"", "binary-very-long":"" ]
+    static final Map jsonPaginationProperties =
+            [pageIndex:[type:'number', format:'int32', description:'Page number to return, starting with zero'],
+             pageSize:[type:'number', format:'int32', description:'Number of records per page (default 100)'],
+             orderByField:[type:'string', description:'Field name to order by (or comma separated names)'],
+             pageNoLimit:[type:'string', description:'If true don\'t limit page size (no pagination)'],
+             dependentLevels:[type:'number', format:'int32', description:'Levels of dependent child records to include']
             ]
+    static final Map jsonPaginationParameters = [type:'object', properties: jsonPaginationProperties]
+    static final Map jsonCountParameters = [type:'object', properties: [count:[type:'number', format:'int64', description:'Count of results']]]
+
 
     @CompileStatic
     List<String> getFieldEnums(FieldInfo fi) {
@@ -957,7 +961,7 @@ public class EntityDefinition {
                 EntityList enumList = efi.find("moqui.basic.Enumeration").condition("enumTypeId", oneRelInfo.title)
                         .orderBy("sequenceNum,enumId").disableAuthz().list()
                 if (enumList) {
-                    List<String> enumIdList = [null]
+                    List<String> enumIdList = []
                     for (EntityValue ev in enumList) enumIdList.add((String) ev.enumId)
                     return enumIdList
                 }
@@ -965,7 +969,7 @@ public class EntityDefinition {
                 EntityList statusList = efi.find("moqui.basic.StatusItem").condition("statusTypeId", oneRelInfo.title)
                         .orderBy("sequenceNum,statusId").disableAuthz().list()
                 if (statusList) {
-                    List<String> statusIdList = [null]
+                    List<String> statusIdList = []
                     for (EntityValue ev in statusList) statusIdList.add((String) ev.statusId)
                     return statusIdList
                 }
@@ -975,27 +979,32 @@ public class EntityDefinition {
     }
 
     @CompileStatic
-    Map getJsonSchema(boolean standalone, Map<String, Object> definitionsMap, String schemaUri, String linkPrefix,
+    Map getJsonSchema(boolean pkOnly, boolean standalone, Map<String, Object> definitionsMap, String schemaUri, String linkPrefix,
                       String schemaLinkPrefix, String masterName, MasterDetail masterDetail) {
         String name = getShortAlias() ?: getFullEntityName()
         String prettyName = getPrettyName(null, null)
         String refName = name
         if (masterName) {
-            refName = "${name}/${masterName}"
+            refName = "${name}.${masterName}"
             prettyName = prettyName + " (Master: ${masterName})"
+        }
+        if (pkOnly) {
+            name = name + ".PK"
+            refName = refName + ".PK"
         }
 
         Map<String, Object> properties = [:]
         properties.put('_entity', [type:'string', default:name])
-        Map<String, Object> schema = [id:name, title:prettyName, type:'object', properties:properties] as Map<String, Object>
+        Map<String, Object> schema = [id:refName, title:prettyName, type:'object', properties:properties] as Map<String, Object>
 
         // add all fields
-        ArrayList<String> allFields = getAllFieldNames(true)
+        ArrayList<String> allFields = pkOnly ? getPkFieldNames() : getAllFieldNames(true)
         for (int i = 0; i < allFields.size(); i++) {
             FieldInfo fi = getFieldInfo(allFields.get(i))
             Map<String, Object> propMap = [:]
             propMap.put('type', fieldTypeJsonMap.get(fi.type))
-            if (fi.type == 'date-time') propMap.put('format', 'date-time')
+            String format = fieldTypeJsonFormatMap.get(fi.type)
+            if (format) propMap.put('format', format)
             properties.put(fi.getName(), propMap)
 
             List enumList = getFieldEnums(fi)
@@ -1006,16 +1015,17 @@ public class EntityDefinition {
         // put current schema in Map before nesting for relationships, avoid infinite recursion with entity rel loops
         if (standalone && definitionsMap == null) {
             definitionsMap = [:]
-            definitionsMap.put('paginationParameters', paginationParameters)
+            definitionsMap.put('paginationParameters', jsonPaginationParameters)
         }
         if (definitionsMap != null && !definitionsMap.containsKey(name))
-            definitionsMap.put(name, schema)
+            definitionsMap.put(refName, schema)
 
-        if (masterName || masterDetail != null) {
+        if (!pkOnly && (masterName || masterDetail != null)) {
             // add only relationships from master definition or detail
             List<MasterDetail> detailList
             if (masterName) {
                 MasterDefinition masterDef = getMasterDefinition(masterName)
+                if (masterDef == null) throw new IllegalArgumentException("Master name ${masterName} not valid for entity ${getFullEntityName()}")
                 detailList = masterDef.detailList
             } else {
                 detailList = masterDetail.getDetailList()
@@ -1025,11 +1035,12 @@ public class EntityDefinition {
                 String relationshipName = relInfo.relationshipName
                 String entryName = relInfo.shortAlias ?: relationshipName
                 String relatedRefName = relInfo.relatedEd.shortAlias ?: relInfo.relatedEd.getFullEntityName()
+                if (pkOnly) relatedRefName = relatedRefName + ".PK"
 
                 // recurse, let it put itself in the definitionsMap
                 // linkPrefix and schemaLinkPrefix are null so that no links are added for master dependents
                 if (definitionsMap != null && !definitionsMap.containsKey(relatedRefName))
-                    relInfo.relatedEd.getJsonSchema(false, definitionsMap, schemaUri, null, null, null, childMasterDetail)
+                    relInfo.relatedEd.getJsonSchema(pkOnly, false, definitionsMap, schemaUri, null, null, null, childMasterDetail)
 
                 if (relInfo.type == "many") {
                     properties.put(entryName, [type:'array', items:['$ref':('#/definitions/' + relatedRefName)]])
@@ -1037,17 +1048,18 @@ public class EntityDefinition {
                     properties.put(entryName, ['$ref':('#/definitions/' + relatedRefName)])
                 }
             }
-        } else {
+        } else if (!pkOnly) {
             // add all relationships, nest
             List<RelationshipInfo> relInfoList = getRelationshipsInfo(true)
             for (RelationshipInfo relInfo in relInfoList) {
                 String relationshipName = relInfo.relationshipName
                 String entryName = relInfo.shortAlias ?: relationshipName
                 String relatedRefName = relInfo.relatedEd.shortAlias ?: relInfo.relatedEd.getFullEntityName()
+                if (pkOnly) relatedRefName = relatedRefName + ".PK"
 
                 // recurse, let it put itself in the definitionsMap
                 if (definitionsMap != null && !definitionsMap.containsKey(relatedRefName))
-                    relInfo.relatedEd.getJsonSchema(false, definitionsMap, schemaUri, linkPrefix, schemaLinkPrefix, null, null)
+                    relInfo.relatedEd.getJsonSchema(pkOnly, false, definitionsMap, schemaUri, linkPrefix, schemaLinkPrefix, null, null)
 
                 if (relInfo.type == "many") {
                     properties.put(entryName, [type:'array', items:['$ref':('#/definitions/' + relatedRefName)]])
@@ -1104,6 +1116,78 @@ public class EntityDefinition {
              pageNoLimit:[type:'string', description:'If true don\'t limit page size (no pagination)'],
              dependentLevels:[type:'number', description:'Levels of dependent child records to include']
             ]
+    static final Map<String, String> fieldTypeRamlMap = [
+            "id":"string", "id-long":"string", "text-indicator":"string", "text-short":"string", "text-medium":"string",
+            "text-long":"string", "text-very-long":"string", "date-time":"date", "time":"string",
+            "date":"string", "number-integer":"integer", "number-float":"number",
+            "number-decimal":"number", "currency-amount":"number", "currency-precise":"number",
+            "binary-very-long":"string" ] // NOTE: binary-very-long may need hyper-schema stuff
+
+    Map<String, Object> getRamlFieldMap(FieldInfo fi) {
+        Map<String, Object> propMap = [:]
+        String description = StupidUtilities.nodeText(fi.fieldNode.get("description"))
+        if (description) propMap.put("description", description)
+        propMap.put('type', fieldTypeRamlMap.get(fi.type))
+
+        List enumList = getFieldEnums(fi)
+        if (enumList) propMap.put('enum', enumList)
+        return propMap
+    }
+
+    Map<String, Object> getRamlTypeMap(boolean pkOnly, Map<String, Object> typesMap, String masterName, MasterDetail masterDetail) {
+        String name = getShortAlias() ?: getFullEntityName()
+        String prettyName = getPrettyName(null, null)
+        String refName = name
+        if (masterName) {
+            refName = "${name}.${masterName}"
+            prettyName = prettyName + " (Master: ${masterName})"
+        }
+
+        Map properties = [:]
+        Map<String, Object> typeMap = [displayName:prettyName, type:'object', properties:properties]
+
+        if (typesMap != null && !typesMap.containsKey(name))
+            typesMap.put(refName, typeMap)
+
+        // add field properties
+        ArrayList<String> allFields = pkOnly ? getPkFieldNames() : getAllFieldNames(true)
+        for (int i = 0; i < allFields.size(); i++) {
+            FieldInfo fi = getFieldInfo(allFields.get(i))
+            properties.put(fi.getName(), getRamlFieldMap(fi))
+        }
+
+        // for master add related properties
+        if (!pkOnly && (masterName || masterDetail != null)) {
+            // add only relationships from master definition or detail
+            List<MasterDetail> detailList
+            if (masterName) {
+                MasterDefinition masterDef = getMasterDefinition(masterName)
+                if (masterDef == null) throw new IllegalArgumentException("Master name ${masterName} not valid for entity ${getFullEntityName()}")
+                detailList = masterDef.detailList
+            } else {
+                detailList = masterDetail.getDetailList()
+            }
+            for (MasterDetail childMasterDetail in detailList) {
+                RelationshipInfo relInfo = childMasterDetail.relInfo
+                String relationshipName = relInfo.relationshipName
+                String entryName = relInfo.shortAlias ?: relationshipName
+                String relatedRefName = relInfo.relatedEd.shortAlias ?: relInfo.relatedEd.getFullEntityName()
+
+                // recurse, let it put itself in the definitionsMap
+                if (typesMap != null && !typesMap.containsKey(relatedRefName))
+                    relInfo.relatedEd.getRamlTypeMap(pkOnly, typesMap, null, childMasterDetail)
+
+                if (relInfo.type == "many") {
+                    // properties.put(entryName, [type:'array', items:relatedRefName])
+                    properties.put(entryName, [type:(relatedRefName + '[]')])
+                } else {
+                    properties.put(entryName, [type:relatedRefName])
+                }
+            }
+        }
+
+        return typeMap
+    }
 
     @CompileStatic
     Map getRamlApi(String masterName) {
@@ -1118,12 +1202,7 @@ public class EntityDefinition {
         ArrayList<String> allFields = getAllFieldNames(true)
         for (int i = 0; i < allFields.size(); i++) {
             FieldInfo fi = getFieldInfo(allFields.get(i))
-            Map<String, Object> propMap = [:]
-            propMap.put('type', fieldTypeJsonMap.get(fi.type))
-            qpMap.put(fi.getName(), propMap)
-
-            List enumList = getFieldEnums(fi)
-            if (enumList) propMap.put('enum', enumList)
+            qpMap.put(fi.getName(), getRamlFieldMap(fi))
         }
 
         // get list
@@ -1153,6 +1232,81 @@ public class EntityDefinition {
         recordMap.put('delete', [description:"Delete ${prettyName}".toString()])
 
         return ramlMap
+    }
+
+    void addToSwaggerMap(Map<String, Object> swaggerMap, String masterName) {
+        EntityDefinition ed = efi.getEntityDefinition(entityName)
+        if (ed == null) throw new IllegalArgumentException("Entity ${entityName} not found")
+        // Node entityNode = ed.getEntityNode()
+
+        Map definitionsMap = ((Map) swaggerMap.definitions)
+        String refDefName = ed.getShortAlias() ?: ed.getFullEntityName()
+        if (masterName) refDefName = refDefName + "." + masterName
+        String refDefNamePk = refDefName + ".PK"
+
+        String entityDescription = StupidUtilities.nodeText(ed.getEntityNode().get("description"))
+
+        // add responses
+        Map responses = ["403":[description:"Access Forbidden (no authz)"], "404":[description:"Value Not Found"],
+                         "429":[description:"Too Many Requests (tarpit)"], "500":[description:"General Error"]]
+
+        // entity path (no ID)
+        String entityPath = "/" + (ed.getShortAlias() ?: ed.getFullEntityName())
+        if (masterName) entityPath = entityPath + "/" + masterName
+        Map<String, Map<String, Object>> entityResourceMap = [:]
+        ((Map) swaggerMap.paths).put(entityPath, entityResourceMap)
+
+        // get - list
+        Map listResponses = ["200":[description:'Success', schema:[type:"array", items:['$ref':"#/definitions/${refDefName}".toString()]]]]
+        listResponses.putAll(responses)
+        entityResourceMap.put("get", [summary:("Get ${ed.getFullEntityName()}".toString()), description:entityDescription,
+                parameters:[name:'body', in:'body', required:false, schema:[allOf:[['$ref':'#/definitions/paginationParameters'], ['$ref':"#/definitions/${refDefName}"]]]],
+                security:[[basicAuth:[]]], responses:listResponses])
+
+        // post - create
+        Map createResponses = ["200":[description:'Success', schema:['$ref':"#/definitions/${refDefNamePk}".toString()]]]
+        createResponses.putAll(responses)
+        entityResourceMap.put("post", [summary:("Create ${ed.getFullEntityName()}".toString()), description:entityDescription,
+                parameters:[name:'body', in:'body', required:true, schema:['$ref':"#/definitions/${refDefName}".toString()]],
+                security:[[basicAuth:[]]], responses:createResponses])
+
+        // entity plus ID path
+        StringBuilder entityIdPathSb = new StringBuilder(entityPath)
+        List<Map> parameters = []
+        for (String pkName in getPkFieldNames()) {
+            entityIdPathSb.append("/{").append(pkName).append("}")
+
+            FieldInfo fi = ed.getFieldInfo(pkName)
+            parameters.add([name:pkName, in:'path', required:true, type:(fieldTypeJsonMap.get(fi.type) ?: "string"),
+                            description:StupidUtilities.nodeText(fi.fieldNode.get("description"))])
+        }
+        String entityIdPath = entityIdPathSb.toString()
+        Map<String, Map<String, Object>> entityIdResourceMap = [:]
+        ((Map) swaggerMap.paths).put(entityIdPath, entityIdResourceMap)
+
+        // under id: get - one
+        Map oneResponses = ["200":[name:'body', in:'body', required:false, schema:['$ref':"#/definitions/${refDefName}".toString()]]]
+        oneResponses.putAll(responses)
+        entityIdResourceMap.put("get", [summary:("Create ${ed.getFullEntityName()}".toString()),
+                description:entityDescription, security:[[basicAuth:[]]], parameters:parameters, responses:oneResponses])
+
+        // under id: patch - update
+        List<Map> updateParameters = new LinkedList<Map>(parameters)
+        updateParameters.add([name:'body', in:'body', required:false, schema:['$ref':"#/definitions/${refDefName}".toString()]])
+        entityIdResourceMap.put("patch", [summary:("Update ${ed.getFullEntityName()}".toString()),
+                description:entityDescription, security:[[basicAuth:[]]], parameters:updateParameters, responses:responses])
+
+        // under id: put - store
+        entityIdResourceMap.put("put", [summary:("Create or Update ${ed.getFullEntityName()}".toString()),
+                description:entityDescription, security:[[basicAuth:[]]], parameters:updateParameters, responses:responses])
+
+        // under id: delete - delete
+        entityIdResourceMap.put("delete", [summary:("Delete ${ed.getFullEntityName()}".toString()),
+                description:entityDescription, security:[[basicAuth:[]]], parameters:parameters, responses:responses])
+
+        // add a definition for entity fields
+        definitionsMap.put(refDefName, ed.getJsonSchema(false, false, definitionsMap, null, null, null, masterName, null))
+        definitionsMap.put(refDefNamePk, ed.getJsonSchema(true, false, null, null, null, null, masterName, null))
     }
 
     List<Node> getFieldNodes(boolean includePk, boolean includeNonPk, boolean includeUserFields) {
