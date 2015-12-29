@@ -49,6 +49,9 @@ New Features
   - New Service REST API tool
     - define REST resources and methods in XML files (see rest-api-1.6.xsd)
     - map methods under resources to service calls and entity operations
+    - REST resource/id visits are pushed as artifacts so authz may be
+      granted for parts or all of a REST API by the API instead of by
+      underlying service or entity
     - see example Service REST API in example.rest.xml
     - call REST methods through the /rest/s1 transition
     - see example client calls in the rest.xml screen definition file
@@ -92,6 +95,9 @@ New Features
     password that may only be used to change the password; current password
     stays valid for password change or login (if email-require-change=false)
 - Entity Features
+  - Added relationship.@mutable attribute, defaults to false for type one*
+    and to true for type many relationships; used in store through
+    sub-records in the entity auto services (used in data load, REST, etc)
   - Added field.@create-only attribute, defaults to entity.@create-only
     value, create only now checked at field level on update (only at entity
     level on delete)
@@ -117,6 +123,9 @@ New Features
   double hash will be used to lookup records or as the default value
 - Service to lookup IP geo data (from freegeoip.net), called by default on
   login (can be disabled with server-stats.@visit-ip-info-on-login)
+- Transaction Cache better supports creates/updates/deletes within a
+  transaction; instead of consolidating all changes into one it keeps a
+  list of changes and runs in order to avoid issues with foreign keys, etc
 
 Bug Fixes
 
@@ -2188,6 +2197,19 @@ Features considered, but may not to be included in 1.x series
     - generic service for sending Data Document to REST (or other?) end point
   - Service REST API
     - allow mapping DataDocument operations as well
+    x Add artifact type for REST Resource, Method
+    x Call ArtifactExecutionFacade.push/pop for RestApi calls
+    - Setup john.doe user with permissions for root of various APIs
+    - Add attribute for resource/method like screen for anonymous and no authz access
+    - Add Service REST API for moqui system admin services
+  - OAuth2 Support
+    - Use Apache Oltu, see https://cwiki.apache.org/confluence/display/OLTU/OAuth+2.0+Authorization+Server
+    - Spec at http://tools.ietf.org/html/rfc6749
+    - Add authz and token transitions in rest.xml
+    - Support in Service REST API (and entity/master?)
+    - Add examples of auth and service calls using OAuth2
+    - Add OAuth2 details in Swagger and RAML files
+    - More?
 
 - AS2 Client and Server
   - use OpenAS2 (http://openas2.sourceforge.net, https://github.com/OpenAS2/OpenAs2App)?

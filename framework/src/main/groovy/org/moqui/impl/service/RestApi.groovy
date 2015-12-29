@@ -14,12 +14,14 @@
 package org.moqui.impl.service
 
 import groovy.transform.CompileStatic
-import groovy.xml.QName
 import org.moqui.BaseException
+import org.moqui.context.ArtifactExecutionInfo
+import org.moqui.context.AuthenticationRequiredException
 import org.moqui.context.ExecutionContext
 import org.moqui.context.ResourceReference
 import org.moqui.entity.EntityFind
 import org.moqui.impl.StupidUtilities
+import org.moqui.impl.context.ArtifactExecutionInfoImpl
 import org.moqui.impl.context.ExecutionContextFactoryImpl
 import org.moqui.impl.entity.EntityDefinition
 import org.slf4j.Logger
@@ -81,10 +83,11 @@ class RestApi {
                                        'X-Page-Range-Low':[type:'integer', description:"Index of first result in page"],
                                        'X-Page-Range-High':[type:'integer', description:"Index of last result in page"]] as Map<String, Object>
         rootMap.put('traits', [[paged:[queryParameters:EntityDefinition.ramlPaginationParameters, headers:headers]],
-            [service:[responses:[403:[description:"Access Forbidden (no authz)"],
+            [service:[responses:[401:[description:"Authentication required"], 403:[description:"Access Forbidden (no authz)"],
                                  429:[description:"Too Many Requests (tarpit)"], 500:[description:"General Error"]]]],
-            [entity:[responses:[403:[description:"Access Forbidden (no authz)"], 404:[description:"Value Not Found"],
-                                429:[description:"Too Many Requests (tarpit)"], 500:[description:"General Error"]]]]
+            [entity:[responses:[401:[description:"Authentication required"], 403:[description:"Access Forbidden (no authz)"],
+                                404:[description:"Value Not Found"], 429:[description:"Too Many Requests (tarpit)"],
+                                500:[description:"General Error"]]]]
         ])
 
         Map<String, Object> childrenMap = resourceNode.getRamlChildrenMap(typesMap)
@@ -93,20 +96,41 @@ class RestApi {
         return rootMap
     }
 
-    Map<String, Object> getSwaggerMap(String rootResourceName, String hostName, String basePath) {
+    Map<String, Object> getSwaggerMap(List<String> rootPathList, String hostName, String basePath) {
+        // TODO: support generate for all roots with empty path
+        if (!rootPathList) throw new ResourceNotFoundException("No resource path specified")
+        String rootResourceName = rootPathList[0]
         ResourceNode resourceNode = rootResourceMap.get(rootResourceName)
         if (resourceNode == null) throw new ResourceNotFoundException("Root resource not found with name ${rootResourceName}")
 
+        StringBuilder fullBasePath = new StringBuilder(basePath)
+        for (String rootPath in rootPathList) fullBasePath.append('/').append(rootPath)
+        Map<String, Map> paths = [:]
+        Map<String, Map> definitions = new TreeMap<String, Map>()
         Map<String, Object> swaggerMap = [swagger:2.0,
-            info:[title:(resourceNode.displayName ?: rootResourceName + ' REST API'), version:(resourceNode.version ?: '1.0'),
+            info:[title:(resourceNode.displayName ?: "Service REST API (${fullBasePath})"), version:(resourceNode.version ?: '1.0'),
                   description:(resourceNode.description ?: '')],
-            host:hostName, basePath:basePath, schemes:['http', 'https'],
+            host:hostName, basePath:fullBasePath.toString(), schemes:['http', 'https'],
             securityDefinitions:[basicAuth:[type:'basic', description:'HTTP Basic Authentication']],
             consumes:['application/json', 'multipart/form-data'], produces:['application/json'],
-            paths:[:], definitions:(new TreeMap())
         ]
 
-        resourceNode.addToSwaggerMap(swaggerMap)
+        // add tags for 2nd level resources
+        if (rootPathList.size() >= 1) {
+            List<Map> tags = []
+            for (ResourceNode childResource in resourceNode.getResourceMap().values())
+                tags.add([name:childResource.name, description:(childResource.description ?: childResource.name)])
+            swaggerMap.put("tags", tags)
+        }
+
+        swaggerMap.put("paths", paths)
+        swaggerMap.put("definitions", definitions)
+
+        resourceNode.addToSwaggerMap(swaggerMap, rootPathList)
+
+        int methodsCount = 0
+        for (Map rsMap in paths.values()) methodsCount += rsMap.size()
+        logger.info("Generated Swagger for ${rootPathList}; ${paths.size()} paths with ${methodsCount} methods, ${definitions.size()} definitions")
 
         return swaggerMap
     }
@@ -183,22 +207,38 @@ class RestApi {
                 remainingInParmNames.remove(pathParm)
             }
             if (remainingInParmNames) {
-                parameters.add([name:'body', in:'body', required:true, schema:['$ref':"#/definitions/${sd.getServiceName()}.In".toString()]])
-                // add a definition for service in parameters
-                definitionsMap.put("${sd.getServiceName()}.In".toString(), sd.getJsonSchemaMapIn())
+                if (method in ['post', 'put', 'patch']) {
+                    parameters.add([name:'body', in:'body', required:true, schema:['$ref':"#/definitions/${sd.getServiceName()}.In".toString()]])
+                    // add a definition for service in parameters
+                    definitionsMap.put("${sd.getServiceName()}.In".toString(), sd.getJsonSchemaMapIn())
+                } else {
+                    for (String parmName in remainingInParmNames) {
+                        Node parmNode = sd.getInParameter(parmName)
+                        String javaType = parmNode.attribute("type")
+                        Map<String, Object> propMap = [name:parmName, in:'query', required:false,
+                                type:getJsonType(javaType), format:getJsonFormat(javaType),
+                                description:StupidUtilities.nodeText(parmNode.get("description"))] as Map<String, Object>
+                        parameters.add(propMap)
+                        sd.addParameterEnums(parmNode, propMap)
+                    }
+
+                }
             }
 
             // add responses
-            Map responses = ["403":[description:"Access Forbidden (no authz)"], "429":[description:"Too Many Requests (tarpit)"],
-                             "500":[description:"General Error"]]
+            Map responses = ["401":[description:"Authentication required"], "403":[description:"Access Forbidden (no authz)"],
+                             "429":[description:"Too Many Requests (tarpit)"], "500":[description:"General Error"]]
             if (sd.getOutParameterNames()) {
                 responses.put("200", [description:'Success', schema:['$ref':"#/definitions/${sd.getServiceName()}.Out".toString()]])
                 definitionsMap.put("${sd.getServiceName()}.Out".toString(), sd.getJsonSchemaMapOut())
             }
 
-            resourceMap.put(method, [summary:(serviceNode.attribute("displayName") ?: "${sd.verb} ${sd.noun}".toString()),
-                    description:StupidUtilities.nodeText(serviceNode.get("description")),
-                    security:[[basicAuth:[]]], parameters:parameters, responses:responses])
+            Map curMap = [:]
+            if (swaggerMap.tags && pathNode.fullPathList.size() > 1) curMap.put("tags", [pathNode.fullPathList[1]])
+            curMap.putAll([summary:(serviceNode.attribute("displayName") ?: "${sd.verb} ${sd.noun}".toString()),
+                           description:StupidUtilities.nodeText(serviceNode.get("description")),
+                           security:[[basicAuth:[]]], parameters:parameters, responses:responses])
+            resourceMap.put(method, curMap)
         }
 
         Map<String, Object> getRamlMap(Map<String, Object> typesMap) {
@@ -241,6 +281,11 @@ class RestApi {
             operation = entityNode.attribute("operation")
         }
         RestResult run(List<String> pathList, ExecutionContext ec) {
+            // service calls handle their own auth, for entity ops authc always required
+            if (!ec.getUser().getUsername()) {
+                throw new AuthenticationRequiredException("User must be logged in for operaton ${operation} on entity ${entityName}")
+            }
+
             if (operation == 'one') {
                 EntityFind ef = ec.entity.find(entityName).searchFormMap(ec.context, null, false)
                 if (masterName) {
@@ -303,19 +348,37 @@ class RestApi {
             }
 
             // add responses
-            Map responses = ["403":[description:"Access Forbidden (no authz)"], "404":[description:"Value Not Found"],
-                             "429":[description:"Too Many Requests (tarpit)"], "500":[description:"General Error"]]
+            Map responses = ["401":[description:"Authentication required"], "403":[description:"Access Forbidden (no authz)"],
+                             "404":[description:"Value Not Found"], "429":[description:"Too Many Requests (tarpit)"],
+                             "500":[description:"General Error"]]
 
             boolean addEntityDef = true
             boolean addPkDef = false
             if (operation  == 'one') {
                 if (remainingPkFields) {
-                    parameters.add([name:'body', in:'body', required:false, schema:['$ref':"#/definitions/${refDefNamePk}".toString()]])
-                    addPkDef = true
+                    for (String fieldName in remainingPkFields) {
+                        EntityDefinition.FieldInfo fi = ed.getFieldInfo(fieldName)
+                        Map<String, Object> fieldMap = [name:fieldName, in:'query', required:false,
+                                type:(EntityDefinition.fieldTypeJsonMap.get(fi.type) ?: "string"),
+                                format:(EntityDefinition.fieldTypeJsonFormatMap.get(fi.type) ?: ""),
+                                description:StupidUtilities.nodeText(fi.fieldNode.get("description"))] as Map<String, Object>
+                        parameters.add(fieldMap)
+                        List enumList = ed.getFieldEnums(fi)
+                        if (enumList) fieldMap.put('enum', enumList)
+                    }
                 }
                 responses.put("200", [description:'Success', schema:['$ref':"#/definitions/${refDefName}".toString()]])
             } else if (operation == 'list') {
-                parameters.add([name:'body', in:'body', required:false, schema:[allOf:[['$ref':'#/definitions/paginationParameters'], ['$ref':"#/definitions/${refDefName}"]]]])
+                parameters.addAll(EntityDefinition.swaggerPaginationParameters)
+                for (String fieldName in ed.getAllFieldNames(false)) {
+                    if (fieldName in pathNode.pathParameters) continue
+                    EntityDefinition.FieldInfo fi = ed.getFieldInfo(fieldName)
+                    parameters.add([name:fieldName, in:'query', required:false,
+                                        type:(EntityDefinition.fieldTypeJsonMap.get(fi.type) ?: "string"),
+                                        format:(EntityDefinition.fieldTypeJsonFormatMap.get(fi.type) ?: ""),
+                                        description:StupidUtilities.nodeText(fi.fieldNode.get("description"))])
+                }
+                // parameters.add([name:'body', in:'body', required:false, schema:[allOf:[['$ref':'#/definitions/paginationParameters'], ['$ref':"#/definitions/${refDefName}"]]]])
                 responses.put("200", [description:'Success', schema:[type:"array", items:['$ref':"#/definitions/${refDefName}".toString()]]])
             } else if (operation == 'count') {
                 parameters.add([name:'body', in:'body', required:false, schema:['$ref':"#/definitions/${refDefName}".toString()]])
@@ -332,13 +395,17 @@ class RestApi {
                 }
             }
 
-            resourceMap.put(method, [summary:("${operation} ${ed.getFullEntityName()}".toString()),
-                    description:StupidUtilities.nodeText(ed.getEntityNode().get("description")),
-                    security:[[basicAuth:[]]], parameters:parameters, responses:responses])
+            Map curMap = [:]
+            String summary = "${operation} ${ed.getEntityName()}"
+            if (masterName) summary = summary + " (master: " + masterName + ")"
+            if (swaggerMap.tags && pathNode.fullPathList.size() > 1) curMap.put("tags", [pathNode.fullPathList[1]])
+            curMap.putAll([summary:summary, description:StupidUtilities.nodeText(ed.getEntityNode().get("description")),
+                           security:[[basicAuth:[]]], parameters:parameters, responses:responses])
+            resourceMap.put(method, curMap)
 
             // add a definition for entity fields
-            if (addEntityDef) definitionsMap.put(refDefName, ed.getJsonSchema(false, false, definitionsMap, null, null, null, masterName, null))
-            if (addPkDef) definitionsMap.put(refDefNamePk, ed.getJsonSchema(true, false, null, null, null, null, masterName, null))
+            if (addEntityDef) definitionsMap.put(refDefName, ed.getJsonSchema(false, false, definitionsMap, null, null, null, false, masterName, null))
+            if (addPkDef) definitionsMap.put(refDefNamePk, ed.getJsonSchema(true, false, null, null, null, null, false, masterName, null))
         }
 
         Map<String, Object> getRamlMap(Map<String, Object> typesMap) {
@@ -418,7 +485,7 @@ class RestApi {
 
         String name
         PathNode parent
-        String fullPath
+        List<String> fullPathList = []
         Set<String> pathParameters = new LinkedHashSet<String>()
 
         PathNode(Node node, PathNode parent, ExecutionContextFactoryImpl ecfi, boolean isId) {
@@ -431,7 +498,8 @@ class RestApi {
 
             if (parent != null) this.pathParameters.addAll(parent.pathParameters)
             name = node.attribute("name")
-            fullPath = isId ? "${parent?.fullPath ?: ''}/{${name}}" : "${parent?.fullPath ?: ''}/${name}"
+            if (parent != null) fullPathList.addAll(parent.fullPathList)
+            fullPathList.add(isId ? "{${name}}".toString() : name)
             if (isId) pathParameters.add(name)
 
             for (Object childObj in node.children()) {
@@ -469,35 +537,69 @@ class RestApi {
         RestResult visitChildOrRun(List<String> pathList, int pathIndex, ExecutionContext ec) {
             // more in path? visit the next, otherwise run by request method
             int nextPathIndex = pathIndex + 1
-            if (pathList.size() > nextPathIndex) {
-                String nextPath = pathList[nextPathIndex]
-                // first try resources
-                ResourceNode rn = resourceMap.get(nextPath)
-                if (rn != null) {
-                    return rn.visit(pathList, nextPathIndex, ec)
-                } else if (idNode != null) {
-                    // no resource? if there is an idNode treat as ID
-                    return idNode.visit(pathList, nextPathIndex, ec)
+            boolean moreInPath = pathList.size() > nextPathIndex
+
+            // push onto artifact stack, check authz
+            String curPath = getFullPathName([])
+            ArtifactExecutionInfo aei = new ArtifactExecutionInfoImpl(curPath, "AT_REST_PATH", getActionFromMethod(ec))
+            // NOTE: consider setting parameters on aei, but don't like setting entire context, currently used for entity/service calls
+            ec.getArtifactExecution().push(aei, !moreInPath)
+
+            try {
+                if (moreInPath) {
+                    String nextPath = pathList[nextPathIndex]
+                    // first try resources
+                    ResourceNode rn = resourceMap.get(nextPath)
+                    if (rn != null) {
+                        return rn.visit(pathList, nextPathIndex, ec)
+                    } else if (idNode != null) {
+                        // no resource? if there is an idNode treat as ID
+                        return idNode.visit(pathList, nextPathIndex, ec)
+                    } else {
+                        // not a resource and no idNode, is a bad path
+                        throw new ResourceNotFoundException("Resource ${nextPath} not valid, index ${pathIndex} in path ${pathList}; resources available are ${resourceMap.keySet()}")
+                    }
                 } else {
-                    // not a resource and no idNode, is a bad path
-                    throw new ResourceNotFoundException("Resource ${nextPath} not valid, index ${pathIndex} in path ${pathList}; resources available are ${resourceMap.keySet()}")
+                    return runByMethod(pathList, ec)
                 }
-            } else {
-                return runByMethod(pathList, ec)
+            } finally {
+                ec.getArtifactExecution().pop(aei)
             }
         }
 
-        void addToSwaggerMap(Map<String, Object> swaggerMap) {
+        void addToSwaggerMap(Map<String, Object> swaggerMap, List<String> rootPathList) {
+            // see if we are in the root path specified
+            int curIndex = fullPathList.size() - 1
+            if (curIndex < rootPathList.size() && fullPathList[curIndex] != rootPathList[curIndex]) return
+
             // if we have method handlers add this, otherwise just do children
-            if (methodMap) {
+            if (rootPathList.size() - 1 <= curIndex && methodMap) {
+                String curPath = getFullPathName(rootPathList)
+
                 Map<String, Map<String, Object>> rsMap = [:]
                 for (MethodHandler mh in methodMap.values()) mh.addToSwaggerMap(swaggerMap, rsMap)
-                ((Map) swaggerMap.paths).put(fullPath, rsMap)
+
+                ((Map) swaggerMap.paths).put(curPath ?: '/', rsMap)
             }
             // add the id node if there is one
-            if (idNode != null) idNode.addToSwaggerMap(swaggerMap)
+            if (idNode != null) idNode.addToSwaggerMap(swaggerMap, rootPathList)
             // add any resource nodes there might be
-            for (ResourceNode rn in resourceMap.values()) rn.addToSwaggerMap(swaggerMap)
+            for (ResourceNode rn in resourceMap.values()) rn.addToSwaggerMap(swaggerMap, rootPathList)
+        }
+
+        String getFullPathName(List<String> rootPathList) {
+            StringBuilder curPath = new StringBuilder()
+            for (int i = rootPathList.size(); i < fullPathList.size(); i++) {
+                String pathItem = fullPathList.get(i)
+                curPath.append('/').append(pathItem)
+            }
+            return curPath.toString()
+        }
+        Map<String, String> actionByMethodMap = [get:'AUTHZA_VIEW', patch:'AUTHZA_UPDATE', put:'AUTHZA_UPDATE',
+                             post:'AUTHZA_CREATE', delete:'AUTHZA_DELETE', options:'AUTHZA_VIEW', head:'AUTHZA_VIEW']
+        String getActionFromMethod(ExecutionContext ec) {
+            String method = ec.web.getRequest().getMethod().toLowerCase()
+            return actionByMethodMap.get(method)
         }
 
         Map getRamlChildrenMap(Map<String, Object> typesMap) {
@@ -530,8 +632,8 @@ class RestApi {
             super(node, parent, ecfi, false)
         }
         RestResult visit(List<String> pathList, int pathIndex, ExecutionContext ec) {
-            logger.info("Visit resource ${name}")
-            // do nothing else but visit child or run here
+            // logger.info("Visit resource ${name}")
+            // visit child or run here
             visitChildOrRun(pathList, pathIndex, ec)
         }
         String toString() {
@@ -552,7 +654,7 @@ class RestApi {
             super(node, parent, ecfi, true)
         }
         RestResult visit(List<String> pathList, int pathIndex, ExecutionContext ec) {
-            logger.info("Visit id ${name}")
+            // logger.info("Visit id ${name}")
             // set ID value in context
             ec.context.put(name, pathList[pathIndex])
             // visit child or run here

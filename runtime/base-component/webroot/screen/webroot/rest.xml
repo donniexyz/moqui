@@ -185,7 +185,7 @@ along with this software (see the LICENSE.md file). If not, see
         <default-response type="none"/>
     </transition>
     <transition name="entity.swagger" read-only="true" method="get">
-        <actions><script>ec.web.handleEntityRestSwagger(sri.screenUrlInfo.extraPathNameList, ec.web.getHostName(), sri.buildUrl("e1").getUrl(), false)</script></actions>
+        <actions><script>ec.web.handleEntityRestSwagger(sri.screenUrlInfo.extraPathNameList, ec.web.getHostName(true), "/rest/e1", false)</script></actions>
         <default-response type="none"/>
     </transition>
 
@@ -236,7 +236,7 @@ along with this software (see the LICENSE.md file). If not, see
         <default-response type="none"/>
     </transition>
     <transition name="master.swagger" read-only="true" method="get">
-        <actions><script>ec.web.handleEntityRestSwagger(sri.screenUrlInfo.extraPathNameList, ec.web.getHostName(), sri.buildUrl("m1").getUrl(), true)</script></actions>
+        <actions><script>ec.web.handleEntityRestSwagger(sri.screenUrlInfo.extraPathNameList, ec.web.getHostName(true), "/rest/m1", true)</script></actions>
         <default-response type="none"/>
     </transition>
 
@@ -254,6 +254,8 @@ along with this software (see the LICENSE.md file). If not, see
     curl -X POST -H "Content-Type: application/json" -u john.doe:moqui \
          -d '{ "exampleName":"Service REST API Test 1", "exampleTypeEnumId":"EXT_MADE_UP", "statusId":"EXST_IN_DESIGN" }' \
          http://localhost:8080/rest/s1/example/examples
+
+    curl -X GET -u john.doe:moqui "http://localhost:8080/rest/s1/moqui/artifacts/hitSummary?artifactType=entity&artifactSubType=create&artifactName=moqui.basic&artifactName_op=contains"
     -->
     <transition name="s1" read-only="true">
         <actions><script>ec.web.handleServiceRestCall(sri.screenUrlInfo.extraPathNameList)</script></actions>
@@ -271,7 +273,7 @@ along with this software (see the LICENSE.md file). If not, see
     curl -X GET -u john.doe:moqui http://localhost:8080/rest/service.raml/example.raml
     -->
     <transition name="service.swagger" read-only="true" method="get">
-        <actions><script>ec.web.handleServiceRestSwagger(sri.screenUrlInfo.extraPathNameList, ec.web.getHostName(), sri.buildUrl("s1").getUrl())</script></actions>
+        <actions><script>ec.web.handleServiceRestSwagger(sri.screenUrlInfo.extraPathNameList, ec.web.getHostName(true), "/rest/s1")</script></actions>
         <default-response type="none"/>
     </transition>
     <transition name="service.raml" read-only="true" method="get">

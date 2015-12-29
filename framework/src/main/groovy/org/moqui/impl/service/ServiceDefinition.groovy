@@ -25,6 +25,7 @@ import org.moqui.impl.actions.XmlAction
 import org.moqui.context.ContextStack
 import org.moqui.impl.context.ExecutionContextImpl
 import org.moqui.impl.entity.EntityDefinition
+import org.moqui.service.ServiceException
 import org.owasp.esapi.ValidationErrorList
 import org.owasp.esapi.errors.IntrusionException
 import org.owasp.esapi.errors.ValidationException
@@ -190,9 +191,10 @@ class ServiceDefinition {
                 mergeAutoParameters(baseParameterNode, childNode)
             } else if (childNode.name() == "parameter") {
                 mergeParameter(baseParameterNode, childNode, ed)
+            } else {
+                // is a validation, just add it in, or the original has been removed so add the new one
+                baseParameterNode.append(childNode)
             }
-            // is a validation, just add it in, or the original has been removed so add the new one
-            baseParameterNode.append(childNode)
         }
         if (baseParameterNode.attribute("entity-name")) {
             if (!baseParameterNode.attribute("field-name")) baseParameterNode.attributes().put("field-name", baseParameterNode.attribute("name"))
@@ -1018,11 +1020,27 @@ class ServiceDefinition {
                     properties.put(childNode.attribute("name"), getJsonSchemaPropMap(childNode))
                 }
             } else {
-                logger.warn("Parameter ${parmNode.attribute('name')} of service ${getServiceName()} is an object type but has no child parameters, may cause error in Swagger, etc")
+                // Swagger UI is okay with empty maps (works, just less detail), so don't warn about this
+                // logger.warn("Parameter ${parmNode.attribute('name')} of service ${getServiceName()} is an object type but has no child parameters, may cause error in Swagger, etc")
             }
+        } else {
+            addParameterEnums(parmNode, propMap)
         }
 
         return propMap
+    }
+
+    void addParameterEnums(Node parmNode, Map<String, Object> propMap) {
+        String entityName = (String) parmNode.attribute("entity-name")
+        String fieldName = (String) parmNode.attribute("field-name")
+        if (entityName && fieldName) {
+            EntityDefinition ed = sfi.getEcfi().getEntityFacade().getEntityDefinition(entityName)
+            if (ed == null) throw new ServiceException("Entity ${entityName} not found, from parameter ${parmNode.attribute('name')} of service ${getServiceName()}")
+            EntityDefinition.FieldInfo fi = ed.getFieldInfo(fieldName)
+            if (fi == null) throw new ServiceException("Field ${fieldName} not found for entity ${entityName}, from parameter ${parmNode.attribute('name')} of service ${getServiceName()}")
+            List enumList = ed.getFieldEnums(fi)
+            if (enumList) propMap.put('enum', enumList)
+        }
     }
 
     @CompileStatic

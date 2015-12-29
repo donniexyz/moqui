@@ -483,6 +483,7 @@ public class EntityDefinition {
         String prettyName
         Map keyMap
         boolean dependent
+        boolean mutable
 
         RelationshipInfo(Node relNode, EntityDefinition fromEd, EntityFacadeImpl efi) {
             this.relNode = relNode
@@ -500,6 +501,13 @@ public class EntityDefinition {
             prettyName = relatedEd.getPrettyName(title, fromEd.internalEntityName)
             keyMap = getRelationshipExpandedKeyMapInternal(relNode, relatedEd)
             dependent = hasReverse()
+            String mutableAttr = relNode.attribute('mutable')
+            if (mutableAttr) {
+                mutable = relNode.attribute('mutable') == "true"
+            } else {
+                // by default type one not mutable, type many are mutable
+                mutable = !isTypeOne
+            }
         }
 
         private boolean hasReverse() {
@@ -941,7 +949,13 @@ public class EntityDefinition {
             ]
     static final Map jsonPaginationParameters = [type:'object', properties: jsonPaginationProperties]
     static final Map jsonCountParameters = [type:'object', properties: [count:[type:'number', format:'int64', description:'Count of results']]]
-
+    static final List<Map> swaggerPaginationParameters =
+            [[name:'pageIndex', in:'query', required:false, type:'number', format:'int32', description:'Page number to return, starting with zero'],
+             [name:'pageSize', in:'query', required:false, type:'number', format:'int32', description:'Number of records per page (default 100)'],
+             [name:'orderByField', in:'query', required:false, type:'string', description:'Field name to order by (or comma separated names)'],
+             [name:'pageNoLimit', in:'query', required:false, type:'string', description:'If true don\'t limit page size (no pagination)'],
+             [name:'dependentLevels', in:'query', required:false, type:'number', format:'int32', description:'Levels of dependent child records to include']
+            ]
 
     @CompileStatic
     List<String> getFieldEnums(FieldInfo fi) {
@@ -980,7 +994,7 @@ public class EntityDefinition {
 
     @CompileStatic
     Map getJsonSchema(boolean pkOnly, boolean standalone, Map<String, Object> definitionsMap, String schemaUri, String linkPrefix,
-                      String schemaLinkPrefix, String masterName, MasterDetail masterDetail) {
+                      String schemaLinkPrefix, boolean nestRelationships, String masterName, MasterDetail masterDetail) {
         String name = getShortAlias() ?: getFullEntityName()
         String prettyName = getPrettyName(null, null)
         String refName = name
@@ -1040,7 +1054,7 @@ public class EntityDefinition {
                 // recurse, let it put itself in the definitionsMap
                 // linkPrefix and schemaLinkPrefix are null so that no links are added for master dependents
                 if (definitionsMap != null && !definitionsMap.containsKey(relatedRefName))
-                    relInfo.relatedEd.getJsonSchema(pkOnly, false, definitionsMap, schemaUri, null, null, null, childMasterDetail)
+                    relInfo.relatedEd.getJsonSchema(pkOnly, false, definitionsMap, schemaUri, null, null, false, null, childMasterDetail)
 
                 if (relInfo.type == "many") {
                     properties.put(entryName, [type:'array', items:['$ref':('#/definitions/' + relatedRefName)]])
@@ -1048,7 +1062,7 @@ public class EntityDefinition {
                     properties.put(entryName, ['$ref':('#/definitions/' + relatedRefName)])
                 }
             }
-        } else if (!pkOnly) {
+        } else if (!pkOnly && nestRelationships) {
             // add all relationships, nest
             List<RelationshipInfo> relInfoList = getRelationshipsInfo(true)
             for (RelationshipInfo relInfo in relInfoList) {
@@ -1059,7 +1073,7 @@ public class EntityDefinition {
 
                 // recurse, let it put itself in the definitionsMap
                 if (definitionsMap != null && !definitionsMap.containsKey(relatedRefName))
-                    relInfo.relatedEd.getJsonSchema(pkOnly, false, definitionsMap, schemaUri, linkPrefix, schemaLinkPrefix, null, null)
+                    relInfo.relatedEd.getJsonSchema(pkOnly, false, definitionsMap, schemaUri, linkPrefix, schemaLinkPrefix, nestRelationships, null, null)
 
                 if (relInfo.type == "many") {
                     properties.put(entryName, [type:'array', items:['$ref':('#/definitions/' + relatedRefName)]])
@@ -1247,8 +1261,9 @@ public class EntityDefinition {
         String entityDescription = StupidUtilities.nodeText(ed.getEntityNode().get("description"))
 
         // add responses
-        Map responses = ["403":[description:"Access Forbidden (no authz)"], "404":[description:"Value Not Found"],
-                         "429":[description:"Too Many Requests (tarpit)"], "500":[description:"General Error"]]
+        Map responses = ["401":[description:"Authentication required"], "403":[description:"Access Forbidden (no authz)"],
+                         "404":[description:"Value Not Found"], "429":[description:"Too Many Requests (tarpit)"],
+                         "500":[description:"General Error"]]
 
         // entity path (no ID)
         String entityPath = "/" + (ed.getShortAlias() ?: ed.getFullEntityName())
@@ -1257,11 +1272,18 @@ public class EntityDefinition {
         ((Map) swaggerMap.paths).put(entityPath, entityResourceMap)
 
         // get - list
+        List<Map> listParameters = []
+        listParameters.addAll(swaggerPaginationParameters)
+        for (String fieldName in getAllFieldNames(false)) {
+            FieldInfo fi = ed.getFieldInfo(fieldName)
+            listParameters.add([name:fieldName, in:'query', required:false, type:(fieldTypeJsonMap.get(fi.type) ?: "string"),
+                                format:(fieldTypeJsonFormatMap.get(fi.type) ?: ""),
+                                description:StupidUtilities.nodeText(fi.fieldNode.get("description"))])
+        }
         Map listResponses = ["200":[description:'Success', schema:[type:"array", items:['$ref':"#/definitions/${refDefName}".toString()]]]]
         listResponses.putAll(responses)
         entityResourceMap.put("get", [summary:("Get ${ed.getFullEntityName()}".toString()), description:entityDescription,
-                parameters:[name:'body', in:'body', required:false, schema:[allOf:[['$ref':'#/definitions/paginationParameters'], ['$ref':"#/definitions/${refDefName}"]]]],
-                security:[[basicAuth:[]]], responses:listResponses])
+                parameters:listParameters, security:[[basicAuth:[]]], responses:listResponses])
 
         // post - create
         Map createResponses = ["200":[description:'Success', schema:['$ref':"#/definitions/${refDefNamePk}".toString()]]]
@@ -1305,8 +1327,8 @@ public class EntityDefinition {
                 description:entityDescription, security:[[basicAuth:[]]], parameters:parameters, responses:responses])
 
         // add a definition for entity fields
-        definitionsMap.put(refDefName, ed.getJsonSchema(false, false, definitionsMap, null, null, null, masterName, null))
-        definitionsMap.put(refDefNamePk, ed.getJsonSchema(true, false, null, null, null, null, masterName, null))
+        definitionsMap.put(refDefName, ed.getJsonSchema(false, false, definitionsMap, null, null, null, false, masterName, null))
+        definitionsMap.put(refDefNamePk, ed.getJsonSchema(true, false, null, null, null, null, false, masterName, null))
     }
 
     List<Node> getFieldNodes(boolean includePk, boolean includeNonPk, boolean includeUserFields) {
@@ -1438,7 +1460,8 @@ public class EntityDefinition {
         EntityValueBase destEvb = destIsEntityValueBase ? (EntityValueBase) dest : null
 
         boolean hasNamePrefix = namePrefix as boolean
-        EntityValueBase evb = src instanceof EntityValueBase ? (EntityValueBase) src : null
+        boolean srcIsEntityValueBase = src instanceof EntityValueBase
+        EntityValueBase evb = srcIsEntityValueBase ? (EntityValueBase) src : null
         ArrayList<String> fieldNameList = pks != null ? this.getFieldNames(pks, !pks, !pks) : this.getAllFieldNames()
         // use integer iterator, saves quite a bit of time, improves time for this method by about 20% with this alone
         int size = fieldNameList.size()
@@ -1451,8 +1474,8 @@ public class EntityDefinition {
                 sourceFieldName = fieldName
             }
 
-            Object value = src.get(sourceFieldName)
-            if (value != null || (evb != null ? evb.isFieldSet(sourceFieldName) : src.containsKey(sourceFieldName))) {
+            Object value = srcIsEntityValueBase? evb.getValueMap().get(sourceFieldName) : src.get(sourceFieldName)
+            if (value != null || (srcIsEntityValueBase ? evb.isFieldSet(sourceFieldName) : src.containsKey(sourceFieldName))) {
                 boolean isCharSequence = false
                 boolean isEmpty = false
                 if (value == null) {
@@ -1627,7 +1650,7 @@ public class EntityDefinition {
         for (Node aliasAll: this.internalEntityNode."alias-all") {
             Node memberEntity = (Node) this.internalEntityNode."member-entity".find({ it."@entity-alias" == aliasAll."@entity-alias" })
             if (!memberEntity) {
-                logger.error("In alias-all with entity-alias [${aliasAll."@entity-alias"}], member-entity with same entity-alias not found, ignoring")
+                logger.error("In view-entity ${getFullEntityName()} in alias-all with entity-alias [${aliasAll."@entity-alias"}], member-entity with same entity-alias not found, ignoring")
                 continue;
             }
 
