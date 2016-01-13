@@ -24,17 +24,19 @@ New Features
   - Apache HttpClient to 4.5.1
   - Apache HttpCore to 4.4.4
   - Apache Jackrabbit to 2.11.2
+  - Apache Log4J to 2.5
+  - Apache Lucene to 5.3.1
   - Ehcache to 2.10.1
-  - ElasticSearch to 1.7.3
+  - ElasticSearch to 2.1.1
   - Groovy to 2.4.5
   - H2 to 1.4.190
   - JNA to 4.2.1
-  - JavaMail to 1.5.4
+  - JavaMail to 1.5.5
   - KIE, Drools to 6.3.0.Final
   - Liquibase to 3.4.2
-  - Log4J to 2.4.1
   - OrientDB to 2.1.4
   - Quartz Scheduler to 2.2.2
+  - SLF4J to 1.7.13
 - Screen and Form Features
   - Added ScreenTest interface and implementation; easy tool for testing
     screens with no Servlet container in place; this uses test stubs for
@@ -57,6 +59,10 @@ New Features
     - see example client calls in the rest.xml screen definition file
     - get Swagger API definition from /rest/service.swagger
     - get RAML API definition from /rest/service.raml
+  - Added Swagger UI 2.1.4, with links from Tools app
+    - browse REST API details from generated Swagger
+    - call REST API services
+    - use new Login Key functionality with api_key for authentication
   - New RestClient API, available through ec.service.rest(), with various
     options for doing HTTP requests and parsing response
   - Added json-schema for Entity REST API: for all entities get
@@ -73,6 +79,16 @@ New Features
     receive#IncomingSystemMessage for remote calls, will call the
     SystemMessageType.receiveServiceName service if specified to save message
   - Added EDI handler (parser and generator), used in Mantle for X12 messages
+- Moqui Tools REST API
+  - Uses new Service REST API feature
+  - See entity op and service mappings in the moqui.rest.xml file
+  - Has REST services for artifacts, basic (enums, geos, statuses, uoms),
+    data documents, email, entity sync, network print, system messages,
+    and users
+  - Has 61 resources with 85 methods (services), 96 definitions
+  - Use Moqui feature to generate Swagger file and view in Swagger UI
+    - see https://github.com/swagger-api/swagger-ui
+    - use a URL like http://localhost:8080/rest/service.swagger/moqui
 - Email Features
   - Various improvements to email message polling (calling EM-ECA rules)
     including support for Java System Properties pass through and fix for
@@ -94,6 +110,17 @@ New Features
   - Password reset now sets a reset password separate from the current
     password that may only be used to change the password; current password
     stays valid for password change or login (if email-require-change=false)
+  - Added Login Key functionality
+    - secure temporary keys associated with a UserAccount as an alternate
+      way to authenticate
+    - expire time configured in user-facade.login-key.@expire-hours in
+      Moqui Conf XML, defaults to 144 hours (6 days)
+    - keys generated using secure random and saved in secure hashed form
+      (default SHA-256) so can only be retrieved on create
+      (see UserFacade.getLoginKey())
+    - can retrieve with a request to /rest/api_key (see rest.xml comments)
+    - pass key in api_key or login_key request header or secure parameter
+      (not in path or query string)
 - Entity Features
   - Added relationship.@mutable attribute, defaults to false for type one*
     and to true for type many relationships; used in store through
@@ -126,6 +153,9 @@ New Features
 - Transaction Cache better supports creates/updates/deletes within a
   transaction; instead of consolidating all changes into one it keeps a
   list of changes and runs in order to avoid issues with foreign keys, etc
+- Added entities and services for wiki spaces and pages, originally from
+  HiveMind, based on ResourceFacade resources
+- Example entities, services now have a consistent package (moqui.entity)
 
 Bug Fixes
 
@@ -137,6 +167,8 @@ Bug Fixes
   expanding; caused problems with set elements in widget-template-include
 - Fixed issue with multiple render-mode elements where there is no
   text.@type attribute; GitHub issue #158
+- Fixed issue with check/set defaults on entity value update where fields
+  not specified were set back to default value
 
 ===========================================================================
 Release 1.5.3 - 11 Sep 2015
@@ -2199,12 +2231,17 @@ Features considered, but may not to be included in 1.x series
     - allow mapping DataDocument operations as well
     x Add artifact type for REST Resource, Method
     x Call ArtifactExecutionFacade.push/pop for RestApi calls
-    - Setup john.doe user with permissions for root of various APIs
+    x Setup john.doe user with permissions for root of various APIs
     - Add attribute for resource/method like screen for anonymous and no authz access
-    - Add Service REST API for moqui system admin services
+    x Add Service REST API for moqui system admin services
   - OAuth2 Support
     - Use Apache Oltu, see https://cwiki.apache.org/confluence/display/OLTU/OAuth+2.0+Authorization+Server
     - Spec at http://tools.ietf.org/html/rfc6749
+    - http://oltu.apache.org/apidocs/oauth2/reference/org/apache/oltu/oauth2/as/request/package-summary.html
+    - http://search.maven.org/#search|ga|1|org.apache.oltu
+    - https://stormpath.com/blog/build-api-restify-stormpath/
+    - https://github.com/PROCERGS/login-cidadao/blob/master/app/Resources/doc/en/examplejava.md
+    - https://github.com/swagger-api/swagger-ui/issues/807
     - Add authz and token transitions in rest.xml
     - Support in Service REST API (and entity/master?)
     - Add examples of auth and service calls using OAuth2

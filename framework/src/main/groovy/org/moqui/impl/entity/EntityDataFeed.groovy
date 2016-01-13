@@ -20,6 +20,7 @@ import org.moqui.entity.EntityException
 import org.moqui.entity.EntityList
 import org.moqui.entity.EntityValue
 import org.moqui.impl.context.ExecutionContextFactoryImpl
+import org.moqui.impl.entity.EntityDefinition.RelationshipInfo
 
 import javax.transaction.Status
 import javax.transaction.Synchronization
@@ -169,11 +170,18 @@ class EntityDataFeed {
         return dfxr
     }
 
+    final Set<String> dataFeedSkipEntities = new HashSet<String>(['moqui.entity.SequenceValueItem'])
+
     List<DocumentEntityInfo> getDataFeedEntityInfoList(String fullEntityName) {
         List<DocumentEntityInfo> entityInfoList = (List<DocumentEntityInfo>) dataFeedEntityInfo.get(fullEntityName)
         if (entityInfoList != null) return entityInfoList
         // after this point entityInfoList is null
         if (dataFeedEntityInfo.containsKey(fullEntityName)) return null
+        // if this is an entity to skip, return now (do after primary lookup to avoid additional performance overhead in common case)
+        if (dataFeedSkipEntities.contains(fullEntityName)) {
+            dataFeedEntityInfo.put(fullEntityName, [])
+            return null
+        }
 
         // logger.warn("=============== getting DocumentEntityInfo for [${fullEntityName}], from cache: ${entityInfoList}")
         // only rebuild if the cache is empty, most entities won't have any entry in it and don't want a rebuild for each one
@@ -547,11 +555,17 @@ class EntityDataFeed {
                                             primaryPkFieldValues.add(pkFieldValue)
                                         } else {
                                             // more complex, need to follow relationships backwards (reverse
-                                            //     relationships) to get the primary entity's value
+                                            //     relationships) to get the primary entity's value(s)
                                             List<String> relationshipList = Arrays.asList(currentEntityInfo.relationshipPath.split(":"))
-                                            List<String> backwardRelList = []
-                                            // add the relationships backwards
-                                            for (String relElement in relationshipList) backwardRelList.add(0, relElement)
+                                            // ArrayList<RelationshipInfo> relInfoList = new ArrayList<RelationshipInfo>()
+                                            ArrayList<String> backwardRelList = new ArrayList<String>()
+                                            // add the relationships backwards, get relInfo for each
+                                            EntityDefinition lastRelEd = primaryEd
+                                            for (String relElement in relationshipList) {
+                                                RelationshipInfo relInfo = lastRelEd.getRelationshipInfo(relElement)
+                                                backwardRelList.add(0, relInfo.relationshipName)
+                                                lastRelEd = relInfo.relatedEd
+                                            }
                                             // add the primary entity name to the end as that is the target
                                             backwardRelList.add(primaryEntityName)
 
@@ -570,7 +584,7 @@ class EntityDataFeed {
                                                 EntityDefinition prevRelValueEd = prevRelValueList.get(0).getEntityDefinition()
 
 
-                                                EntityDefinition.RelationshipInfo backwardRelInfo = null
+                                                RelationshipInfo backwardRelInfo = null
                                                 // Node backwardRelNode = null
                                                 if (prevRelName.contains("#")) {
                                                     String title = prevRelName.substring(0, prevRelName.indexOf("#"))
